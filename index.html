@@ -1,0 +1,669 @@
+<!DOCTYPE>
+<html>
+	<head>
+		<meta content="text/html; charset=utf-8">
+		<title>Генетический алгоритм</title>
+		<script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
+		<style>
+			canvas {
+				border: 1px solid;
+				background: lightgray;
+				display: block;
+			}
+			#cords {
+				border: 1px solid;
+				background: lightyellow;
+				border-radius: 5px;
+				position: absolute;
+				white-space: pre-line;
+				padding: 1px;
+			}
+			
+			#dataWrap {
+				display: inline-block; 
+				vertical-align: top; 
+				white-space: pre-line; 
+				max-width: calc(100% - 500px);
+			}
+			input::-webkit-inner-spin-button { 
+				opacity: 1; 
+			}
+			#settings {
+				display:block;
+				margin:0 auto;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="simulation" style="display:none;">
+			<canvas width="480" height="480" style="display: inline-block;"></canvas>
+			<div id="dataWrap">
+				<div id="genData"></div>
+				<div id="score"></div>
+			</div>
+			<div>
+				<input type="button" onclick="run()" value="Run">
+				<input type="button" onclick="stop()" value="Pause">
+				<input type="text" id="speed" value="500">
+			</div>
+			<div id="genCount">Поколение 0</div>
+			<div>День <span id="days">0</span></div>
+			<span id="cords" style="display:none"></span>
+		</div>
+		<div id="settings">
+			<div class="settingsVal"><input type="number" id="createCount" value="36" min="0">Количество существ в мире(из числа должен извлекаться корень)</div>
+			<div class="settingsVal"><input type="number" id="genomeLength" value="40" min="0">Длинна генома(не может быть меньше 24)</div>
+			<div class="settingsVal"><input type="number" id="foodCount" value="72" min="0">Количество еды в мире</div>
+			<div class="settingsVal"><input type="number" id="poisonCount" value="72" min="0">Количество яда в мире</div>
+			<div class="settingsVal"><input type="number" id="mutantCount" value="1" min="0">Количество мутантов в одном потомстве(не может быть больше корня из существ)</div>
+			<div class="settingsVal"><input type="number" id="mutationCount" value="1" min="0">Количество мутаций у одного мутанта</div>
+			<div class="settingsVal"><input type="number" id="genomeFlipsCount" value="3" min="0">Лимит пролистываний генома в день(при увеличении числа, существа выживают лучше, но симуляция начинает подвисать)</div>
+			
+			<div><input type="button" onclick="start()" value="Start"></div>
+		</div>
+		<script>
+			/** Логика генома: 
+			///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			/// Если команда 0..7, то Существо перемещается в соответсвующую клетку	и завершает ход									///
+			/// 0 1 2																												///
+			/// 3 C 4																												///
+			/// 5 6 7																												///
+			/// Если в клетке был яд, Существо погибает																				///
+			/// Если в клетке было другое Существо, то геном пролистывается на два шага, а наше Существо остаётся на месте			///
+			/// Если в клетке была еда, то геном пролистывается на три шага, а Существо перемещается в эту клетку и съедает еду		///
+			/// Если клетка была пустой, то геном пролистывается на четыре шага, а Существо перемещается в эту клетку				///
+			///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			/// Если команда 8..15, то Существо взаимодействует с соответствующей клеткой и завершет ход							///
+			/// 8  9  10																											///
+			/// 11 С  12																											///
+			/// 13 14 15																											///
+			/// Если в клетке был яд, то геном пролистывается на один шаг, а Существо преобразует яд в еду и съест.					///
+			/// Если в клетке было другое Существо, то геном пролистывается на два шага												///
+			/// Если в клетке была еда, то геном пролистывается на три шага, а Существо съедает еду из этой клетки					///
+			/// Если клетка была пустой, то геном пролистывается на четыре шага														///
+			///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			/// Если команда 16..23, то Существо смотрит, что находится в соответствующей клетке (команда не завершает ход)			///
+			/// 16 17 18																											///
+			/// 19 С  20																											///
+			/// 21 22 23																											///
+			/// Если в клетке был яд, то геном пролистывается на один шаг															///
+			/// Если в клетке было другое Существо, то геном пролистывается на два шага												///
+			/// Если в клетке была еда, то геном пролистывается на три шага															///
+			/// Если клетка была пустой, то геном пролистывается на четыре шага														///
+			///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			/// Все остальные команды пролистывают геном на свой номер, при этом ход не завершается	 								///
+			///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			**/
+			
+			$('canvas').on("mousemove", function (e) {
+				$('#cords').text('X:'+e.offsetX+" Y:"+e.offsetY+'\nI:'+Math.floor(e.offsetX/20)+' J:'+Math.floor((e.offsetY-1)/20));
+				$('#cords').offset({'top': e.offsetY + 15, 'left': e.offsetX + 25});
+			});
+			
+			$('canvas').on("mouseover", function () {
+				$('#cords').show();
+			});
+			
+			$('canvas').on("mouseout", function () { 
+				$('#cords').hide();
+			});
+			
+			var canvas = $('canvas')[0];
+			var ctx = canvas.getContext('2d');
+			var entities = new Map(); //Карта с существами
+			var objects = new Map(); //Карта с ядом/едой
+			var dayCount = 0; //Счётчик дней
+			var generationCount = 0; //Счётчик поколений
+			var score = []; //Статистика эффективности генома
+			var score2 = []; //Последние выжившие геномы
+			var IGC = 0; //Счётчик одинаковых поколений
+			
+			function start() { //Функция, считывающая параметры симуляции и задающая константы
+				$("#simulation").show();
+				$("#settings").hide();
+				CCV = Math.floor($('#createCount').val());
+				GLV = Math.floor($('#genomeLength').val());
+				FCV = Math.floor($('#foodCount').val());
+				PCV = Math.floor($('#poisonCount').val());
+				MCV = Math.floor($('#mutationCount').val());
+				M2CV = Math.floor($('#mutantCount').val());
+				GFCV = Math.floor($('#genomeFlipsCount').val());
+				window._createCount = (CCV>576?36:CCV<0?36:CCV)||36; //Константа, определяющая кол-во существ на поле(Не может быть больше количества клеток)
+				window._minCreateCount = Math.floor(Math.sqrt(_createCount)); //Константа, определяющая минимальное кол-во существ, по достижению которого начинается размножение(Всегда должна быть корнем из кол-ва существ)
+				window._genomeLength = (GLV<0?40:GLV)||40; //Константа, определяющая кол-во команд в геноме
+				window._foodCount = (FCV+_createCount>576?0:FCV<0?0:FCV)||72; //Константа, определяющая кол-во еды на поле(Не может быть больше количества клеток, не занятых существами)
+				window._poisonCount = (PCV+_foodCount+_createCount>576?0:PCV<0?0:PCV)||72; //Константа, определяющая кол-во яда на поле(Не может быть больше количества клеток, не занятых существами или едой)
+				window._mutationCount = MCV||1; //Константа, определяющая кол-во мутаций у мутантов
+				window._mutantCount = (M2CV>_minCreateCount?1:M2CV<0?1:M2CV)||1; //Константа, определяющая кол-во мутантов у родителя(Не может быть больше количества родителей)
+				window._genomeFlipsCount = (GFCV>10?10:GFCV<0?3:GFCV)||3; //Константа, определяющая сколько раз Существо может листать свой геном(Значения выше 10 сильно замедляют работу)
+				generate(true, null); //Запустить симуляцию
+			} //function start
+			
+			ctx.clear = function() { //Функция, отчищающая поле и рисующая сетку
+				ctx.clearRect(0, 0, 480, 480);
+				ctx.beginPath();
+					for (let i = 0; i < 24; i++) {
+						ctx.moveTo(20 * i, 0);
+						ctx.lineTo(20 * i, 480);
+						ctx.moveTo(0, 20 * i);
+						ctx.lineTo(480, 20 * i);
+						ctx.lineWidth = 1;
+					}
+				ctx.stroke();
+			}; //ctx.clear
+			
+			function makeGenome() { //Функция, собирающая первичный геном
+				let genome = [];
+				for (let i = 0; i < _genomeLength; i++) {
+					genome[i] = Math.floor(Math.random()*(_genomeLength + 24)); //Максимальное число должно быть больше количества элементов в геноме на 24(23 числа под команды и 1 под пролистывание)
+				}
+				return genome;
+			} //function makeGenome
+			
+			function generate(first, newGeneration) { //Начало симуляции
+				ctx.clear(); //Рисуется поле
+				if (first) { //Если это первая генерация
+					spawnCreate(0); //Спавнятся существа
+					function spawnCreate(CC) { //Рекурсивная функция, спавнящяя существ
+						if (CC >= _createCount) return; //Когда заспавнили достаточно - перестать
+						let x = Math.floor(Math.random() * 24); //X координата
+						let y = Math.floor(Math.random() * 24); //Y координата
+						if (!entities.get(x+';'+y)) { //Если клетка свободна - заспавнить в ней Существо
+							let code = makeGenome();
+							CC++;
+							entities.set(x + ';' + y, {"code": code, "step": 0, "coords": [x, y], "health": 15});
+							ctx.fillStyle = "#3131ee";
+							ctx.fillRect(20 * x + 1, 20 * y + 1, 18, 18);
+							ctx.font = "15px arial";
+							ctx.fillStyle = "#fff";
+							ctx.fillText("15", 20 * x + 1, 20 * (y + 1) - 4); //Отобразить здоровье существа
+						}
+						spawnCreate(CC); //Продолжаем выполнять функцию, пока не заспавним нужное количество существ
+					}
+				} else {
+					spawnCreate2(0); //Спавнятся существа
+					function spawnCreate2(CC) { //Рекурсивная функция, спавнящяя существ
+						if (CC >= _createCount) return; //Когда заспавнили достаточно - перестать
+						let x = Math.floor(Math.random() * 24); //X координата
+						let y = Math.floor(Math.random() * 24); //Y координата
+						if (!entities.get(x + ';' + y)) { //Если клетка свободна - заспавнить в ней Существо
+							let code = newGeneration[CC];
+							CC++;
+							entities.set(x + ';' + y, {"code": code, "step": 0, "coords": [x, y], "health": 15});
+							ctx.fillStyle = "#3131ee";
+							ctx.fillRect(20 * x + 1, 20 * y + 1, 18, 18);
+							ctx.font = "15px arial";
+							ctx.fillStyle = "#fff";
+							ctx.fillText("15", 20 * x + 1, 20 * (y + 1) - 4); //Отобразить здоровье существа
+						}
+						spawnCreate2(CC); //Продолжаем выполнять функцию, пока не заспавним нужное количество существ
+					}
+				} //if (first)
+				spawnFood(0); //Спавнится еда
+				function spawnFood(FC) { //Рекурсивная функция, спавнящяя еду
+					if (FC >= _foodCount) return; //Когда заспавнили достаточно - перестать
+					let x = Math.floor(Math.random() * 24); //X координата
+					let y = Math.floor(Math.random() * 24); //Y координата
+					if (!entities.get(x + ';' + y) && !objects.get(x + ';' + y)) { //Если клетка свободна - заспавнить в ней еду
+						FC++;
+						objects.set(x + ';' + y, {"type": "food", "coords": [x, y]});
+						ctx.fillStyle = "#00ff00";
+						ctx.fillRect(20 * x + 1, 20 * y + 1, 18, 18);
+					}
+					spawnFood(FC); //Продолжаем выполнять функцию, пока не заспавним нужное количество еды
+				}
+				spawnPoison(0); //Спавнится яд
+				function spawnPoison(PC) { //Рекурсивная функция, спавнящяя яд
+					if (PC >= _poisonCount) return; //Когда заспавнили достаточно - перестать
+					let x = Math.floor(Math.random() * 24); //X координата
+					let y = Math.floor(Math.random() * 24); //Y координата
+					if (!entities.get(x + ';' + y) && !objects.get(x + ';' + y)) { //Если клетка свободна - заспавнить в ней яд
+						PC++;
+						objects.set(x + ';' + y, {"type": "poison", "coords": [x, y]});
+						ctx.fillStyle = "#ff0000";
+						ctx.fillRect(20 * x + 1, 20 * y + 1, 18, 18);
+					}
+					spawnPoison(PC); //Продолжаем выполнять функцию, пока не заспавним нужное количество яда
+				}
+			} //function generate
+			
+			function endTurn(create, entities2, skipCount) { //Функция, завершающая ход существа, если оно не изменило своё местоположение
+				/** Описание параметров:
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				/// create 		- Объект существа в карте											object	///
+				/// entities2	- Временная карта, содержащая уже сходивших существ 				map		///
+				/// skipCount	- Количество шагов, на которое нужно пролистать геном 				num		///
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				**/
+				
+				if (create.health - 1 == 0) { //Если здоровье существа опустилось до нуля
+					ctx.clearRect(20 * create.coords[0] + 1, 20 * create.coords[1] + 1, 18, 18); //Стереть Существо с поля
+					entities.delete(create.coords[0] + ';' + create.coords[1]); //Удалить Существо из карты
+				} else { //Иначе
+					create.health--; //Уменьшить здоровье на 1
+					ctx.fillStyle = "#3131ee"; //И перерисовать его на поле, с уже изменённым здоровьем
+					ctx.fillRect(20 * create.coords[0] + 1, 20 * create.coords[1] + 1, 18, 18); 
+					ctx.font = "15px arial";
+					ctx.fillStyle = "#fff";
+					if (create.health >= 10) //Для длинных чисел
+						ctx.fillText(create.health, 20 * create.coords[0] + 1, 20 * (create.coords[1] + 1) - 4); //Отобразить здоровье существа
+					else //Для коротких чисел
+						ctx.fillText(create.health, 20 * create.coords[0] + 6, 20 * (create.coords[1] + 1) - 4); //Отобразить здоровье существа
+					
+					while (create.step+skipCount >= _genomeLength) { //Цикличность генома
+						skipCount = skipCount - _genomeLength;
+					}
+					create.step += skipCount; //Шаг выполнен
+					entities2.set(create.coords[0] + ';' + create.coords[1], create); //Переместить Существо во временную карту
+					entities.delete(create.coords[0] + ';' + create.coords[1]); //Удалить его прошлое расположение в карте
+				} //if (create.health - 1 == 0)
+			} //function move
+			
+			function move(x, y, create, entities2) { //Функция, вызываемая, когда Существо собирается переместиться
+				/** Описание параметров:
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				/// x 			- X координата клетки, в которую переходит Существо					num		///
+				/// y 			- Y координата клетки, в которую переходит Существо					num		///
+				/// create 		- Объект существа в карте											object	///
+				/// entities2	- Временная карта, содержащая уже сходивших существ 				map		///
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				**/
+				
+				let object = objects.get(x + ';' + y);
+				if (object) { //Если в клетке для перемещения находится какой-либо объект
+					if (object.type == "food") { //Если объект - еда
+						create.health = create.health + 10 > 99 ? 99 : create.health + 10; //Добавить к здоровью существа 10 пунктов(ограничение максимального здоровья в 99 пунктов)
+						objects.delete(x + ';' + y); //Удалить еду с клетки
+						function respawnFood() { //Рекурсивная функция, спавнящяя еду в свободную клетку
+							let newx = Math.floor(Math.random() * 24); //X координата
+							let newy = Math.floor(Math.random() * 24); //Y координата
+							if (!entities.get(newx+';'+newy) && !entities2.get(newx+';'+newy) && !objects.get(newx+';'+newy)) { //Если клетка свободна - заспавнить в ней еду
+								objects.set(newx + ';' + newy, {"type":"food", "coords":[newx, newy]});
+								ctx.fillStyle = "#00ff00";
+								ctx.fillRect(20 * newx + 1, 20 * newy + 1, 18, 18);
+							} else { //Иначе
+								respawnFood(); //Продолжить выполнять функцию, пока не заспавним еду
+							}
+						}
+						respawnFood(); //Заспавнить еду в другом месте
+						create.health--; //Уменьшить здоровье на один пункт
+						ctx.fillStyle = "#3131ee";
+						ctx.fillRect(20 * x + 1, 20 * y + 1, 18, 18); //Поместить Существо в эту клетку
+						ctx.font = "15px arial";
+						ctx.fillStyle = "#fff";
+						if (create.health >= 10) //Для длинных чисел
+							ctx.fillText(create.health, 20 * x + 1, 20 * (y + 1) - 4); //Отобразить здоровье существа
+						else //Для коротких чисел
+							ctx.fillText(create.health, 20 * x + 6, 20 * (y + 1) - 4); //Отобразить здоровье существа
+						ctx.clearRect(20 * create.coords[0] + 1, 20 * create.coords[1] + 1, 18, 18); //Стереть его прошлое расположение
+						entities2.set(x + ';' + y, create); //Переместить Существо в карте
+						entities.delete(create.coords[0] + ';' + create.coords[1]); //Удалить его прошлое расположение в карте
+						create.coords = [x, y]; //Существо переместилось
+						create.step = create.step + 3 >= _genomeLength ? create.step + 3 - _genomeLength : create.step + 3; //Шаг выполнен(цикличность генома)
+					} else { //Иначе, объект - яд
+						ctx.clearRect(20 * create.coords[0] + 1, 20 * create.coords[1] + 1, 18, 18); //Стереть Существо с поля
+						entities.delete(create.coords[0] + ';' + create.coords[1]); //Удалить Существо из карты
+					} //if (object.type == "food")
+				} else { //Иначе, если клетка пустая
+					if (create.health - 1 == 0) { //Если здоровье существа опустилось до нуля
+						ctx.clearRect(20 * create.coords[0] + 1, 20 * create.coords[1] + 1, 18, 18); //Стереть Существо с поля
+						entities.delete(create.coords[0] + ";" + create.coords[1]); //Удалить Существо из карты
+					} else { //Иначе
+						create.health--; //Уменьшить здоровье на 1
+						ctx.fillStyle = "#3131ee"; 
+						ctx.fillRect(20 * x + 1, 20 * y + 1, 18, 18); //Поместить Существо в запрошенную клетку
+						ctx.font = "15px arial";
+						ctx.fillStyle = "#fff";
+						if (create.health >= 10) //Для длинных чисел
+							ctx.fillText(create.health, 20 * x + 1, 20 * (y + 1) - 4); //Отобразить здоровье существа
+						else //Для коротких чисел
+							ctx.fillText(create.health, 20 * x + 6, 20 * (y + 1) - 4); //Отобразить здоровье существа
+						ctx.clearRect(20 * create.coords[0] + 1, 20 * create.coords[1] + 1, 18, 18); //Стереть его прошлое расположение
+						entities2.set(x + ';' + y, create); //Переместить Существо в карте
+						entities.delete(create.coords[0] + ';' + create.coords[1]); //Удалить его прошлое расположение в карте
+						create.coords = [x, y]; //Существо переместилось
+						create.step = create.step + 4 >= _genomeLength ? create.step + 4 - _genomeLength : create.step + 4; //Шаг выполнен(цикличность генома)
+					} //if (create.health-1 == 0)
+				} //if (object)
+			} //function move
+			
+			function interact(x, y, create, entities2) { //Функция, вызываемая, когда Существо взаимодействует с объектом
+				/** Описание параметров:
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				/// x 			- X координата клетки, с которой взаимодействует Существо			num		///
+				/// y 			- Y координата клетки, с которой взаимодействует Существо			num		///
+				/// create 		- Объект существа в карте											object	///
+				/// entities2	- Временная карта, содержащая уже сходивших существ 				map		///
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				**/
+				
+				let object = objects.get(x + ';' + y);
+				if (object) { //Если в клетке с которой взаимодействуем, находится какой-либо объект
+					if (object.type == "food") { //Если объект - еда
+						create.health = create.health + 10 > 99 ? 99 : create.health + 10; //Добавить к здоровью существа 10 пунктов(ограничение максимального здоровья в 99 пунктов)
+						ctx.clearRect(20 * x + 1, 20 * y + 1, 18, 18); //Стереть еду с поля
+						objects.delete(x + ';' + y); //Удалить еду из карты
+						function respawnFood() { //Рекурсивная функция, спавнящяя еду в свободную клетку
+							let newx = Math.floor(Math.random() * 24); //X координата
+							let newy = Math.floor(Math.random() * 24); //Y координата
+							if (!entities.get(newx + ';' + newy) && !entities2.get(newx + ';' + newy) && !objects.get(newx + ';' + newy)) { //Если клетка свободна - заспавнить в ней еду
+								objects.set(newx + ';' + newy, {"type": "food", "coords": [newx, newy]});
+								ctx.fillStyle = "#00ff00";
+								ctx.fillRect(20 * newx + 1, 20 * newy + 1, 18, 18);
+							} else { //Иначе
+								respawnFood(); //Продолжить выполнять функцию, пока не заспавним еду
+							}
+						}
+						respawnFood(); //Заспавнить еду в другом месте
+						endTurn(create, entities2, 3); //Завершить ход
+					} else { //Иначе, если объект - яд
+						create.health = create.health + 10 > 99 ? 99 : create.health + 10; //Преобразовать его в еду и добавить к здоровью существа 10 пунктов(ограничение максимального здоровья в 99 пунктов)
+						ctx.clearRect(20 * x + 1, 20 * y + 1, 18, 18); //Стереть яд с поля
+						objects.delete(x + ';' + y); //Удалить его из карты
+						function respawnPoison() { //Рекурсивная функция, спавнящяя яд в свободную клетку
+							let newx = Math.floor(Math.random() * 24); //X координата
+							let newy = Math.floor(Math.random() * 24); //Y координата
+							if (!entities.get(newx + ';' + newy) && !entities2.get(newx + ';' + newy) && !objects.get(newx + ';' + newy)) { //Если клетка свободна - заспавнить в ней яд
+								objects.set(newx + ';' + newy, {"type": "poison", "coords": [newx, newy]});
+								ctx.fillStyle = "#ff0000";
+								ctx.fillRect(20 * newx + 1, 20 * newy + 1, 18, 18);
+							} else { //Иначе
+								respawnPoison(); //Продолжить выполнять функцию, пока не заспавним яд
+							}
+						}
+						respawnPoison(); //Заспавнить яд в другом месте
+						endTurn(create, entities2, 1); //Завершить ход
+					} //if (object.type == "food") 
+				} else { //Иначе, Существо взаимодействовало ни с чем
+					endTurn(create, entities2, 4); //Завершить ход
+				} //if (object)
+			} //function interact
+			
+			function check(x, y, create, stepCount, entities2, commands) { //Функция, вызываемая, когда Существо осматривает клетку
+				/** Описание параметров:
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				/// x 			- X координата клетки, которую осматривает Существо				num			///
+				/// y 			- Y координата клетки, которую осматривает Существо				num			///
+				/// create 		- Объект существа в карте							(Пробр.)	object		///
+				/// stepCount	- Показывает, сколько раз был пролистан геном 		(Пробр.)	num			///
+				/// entities2	- Временная карта, содержащая уже сходивших существ	(Пробр.)	map			///
+				/// commands	- Callback функция									(Пробр.)	function	///
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				**/
+				
+				let object = objects.get(x + ';' + y);
+				if (object) { //Если в клетке, которую осматривает Существо, находится какой-либо объект
+					if (object.type == "food") { //Если объект - еда
+						skip(stepCount, create, 3, entities2, commands); //Пролистать геном на 3 шага
+					} else { //Иначе, если объект - яд
+						skip(stepCount, create, 1, entities2, commands); //Пролистать геном на 1 шаг
+					}
+				} else { //Если клетка пустая
+					skip(stepCount, create, 4, entities2, commands);  //Пролистать геном на 4 шага
+				}
+			} //function check
+			
+			function skip(stepCount, create, skipCount, entities2, commands) { //Функция, листающая геном без завершения хода
+				/** Описание параметров:
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				/// stepCount	- Показывает, сколько раз был пролистан геном 					num			///
+				/// create 		- Объект существа в карте										object		///
+				/// skipCount	- Показывает, на сколько нужно пролистать геном 				num			///
+				/// entities2	- Временная карта, содержащая уже сходивших существ (Пробр.)	map			///
+				/// commands	- Callback функция												function	///
+				///////////////////////////////////////////////////////////////////////////////////////////////
+				**/
+				
+				if (stepCount < _genomeFlipsCount - 1) { //Если Существо уже пролистало свой геном максимальное количество раз
+					stepCount++;
+					while (create.step+skipCount >= _genomeLength) { //Цикличность генома
+						skipCount = skipCount - _genomeLength;
+					}
+					create.step += skipCount; //Пролистать геном
+					commands(stepCount); //Повторить ход
+				} else { //Закончить ход последним пролистыванием
+					endTurn(create, entities2, skipCount); //Пропустить ход
+				}
+			} //function skip
+			
+			function day() {
+				dayCount++;
+				$('#days').text(dayCount);
+				let entities2 = new Map(); //Временная карта
+				for (let i of entities) { //Перебрать всех существ
+					if (entities.size+entities2.size == _minCreateCount) { //Если селекция произведена
+						return mutate(entities2);
+					}
+					let create = i[1]; //Запоминаем проверяемое Существо
+					let x = create.coords[0] -1 < 0 ? 23 : create.coords[0] - 1; //Координата x на один меньше текущей(цикличность поля)
+					let y = create.coords[1] -1 < 0 ? 23 : create.coords[1] - 1; //Координата y на один меньше текущей(цикличность поля)
+					let x1 = create.coords[0] + 1> 23 ? 0 : create.coords[0] + 1; //Координата x на один больше текущей(цикличность поля)
+					let y1 = create.coords[1] + 1> 23 ? 0 : create.coords[1] + 1; //Координата y на один больше текущей(цикличность поля)
+					commands(0);
+					function commands(stepCount) {
+						let act = create.code[create.step]; //Записываем, что нужно сделать
+						if (act >= 0 && act <= 7) { //Если действие - переход
+							///0 1 2
+							///3 C 4
+							///5 6 7
+							if (act == 0) { //Лев. верх
+								if (!entities.get(x + ";" + y) && !entities2.get(x + ";" + y)) { //Если клетка не занята Существом
+									move(x, y, create, entities2); //Переместиться в неё
+								} else { //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 1) { //Верх
+								if (!entities.get(create.coords[0] + ';' + y) && !entities2.get(create.coords[0] + ";" + y)) { //Если клетка не занята Существом
+									move(create.coords[0], y, create, entities2); //Переместиться в неё
+								} else { //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 2) { //Прав. верх
+								if (!entities.get(x1 + ';' + y) && !entities2.get(x1 + ";" + y)) { //Если клетка не занята Существом
+									move(x1, y, create, entities2); //Переместиться в неё
+								} else { //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 3) { //Лево
+								if (!entities.get(x + ';' + create.coords[1]) && !entities2.get(x + ';' + create.coords[1])) { //Если клетка не занята Существом
+									move(x, create.coords[1], create, entities2); //Переместиться в неё
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 4) { //Право
+								if (!entities.get(x1 + ';' + create.coords[1]) && !entities2.get(x1 + ';' + create.coords[1])) { //Если клетка не занята Существом
+									move(x1, create.coords[1], create, entities2); //Переместиться в неё
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 5) { //Лев. низ
+								if (!entities.get(x + ';' + y1) && !entities2.get(x + ';' + y1)) { //Если клетка не занята Существом
+									move(x, y1, create, entities2); //Переместиться в неё
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 6) { //Низ
+								if (!entities.get(create.coords[0] + ';' + y1) && !entities2.get(create.coords[0] + ';' + y1)) { //Если клетка не занята Существом
+									move(create.coords[0], y1, create, entities2); //Переместиться в неё
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else { //Прав. низ
+								if (!entities.get(x1 + ';' + y1) && !entities2.get(x1 + ';' + y1)) { //Если клетка не занята Существом
+									move(x1, y1, create, entities2); //Переместиться в неё
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} 
+						} else if (act >= 8 && act <= 15) { //Если действие - взаимодействие
+							///8  9  10
+							///11 C  12
+							///13 14 15
+							if (act == 8) { //Лев. верх
+								if (!entities.get(x + ";" + y) && !entities2.get(x + ";" + y)) { //Если клетка не занята Существом
+									interact(x, y, create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 9) { //Верх
+								if (!entities.get(create.coords[0] + ';' + y) && !entities2.get(create.coords[0] + ";" + y)) { //Если клетка не занята Существом
+									interact(create.coords[0], y, create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 10) { //Прав. верх
+								if (!entities.get(x1 + ';' + y) && !entities2.get(x1 + ";" + y)) { //Если клетка не занята Существом
+									interact(x1, y, create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 11) { //Лево
+								if (!entities.get(x + ';' + create.coords[1]) && !entities2.get(x + ';' + create.coords[1])) { //Если клетка не занята Существом
+									interact(x, create.coords[1], create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 12) { //Право
+								if (!entities.get(x1 + ';' + create.coords[1]) && !entities2.get(x1 + ';' + create.coords[1])) { //Если клетка не занята Существом
+									interact(x1, create.coords[1], create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 13) { //Лев. низ
+								if (!entities.get(x + ';' + y1) && !entities2.get(x + ';' + y1)) { //Если клетка не занята Существом
+									interact(x, y1, create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else if (act == 14) { //Низ
+								if (!entities.get(create.coords[0] + ';' + y1) && !entities2.get(create.coords[0] + ';' + y1)) { //Если клетка не занята Существом
+									interact(create.coords[0], y1, create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} else { //Прав. низ
+								if (!entities.get(x1 + ';' + y1) && !entities2.get(x1 + ';' + y1)) { //Если клетка не занята Существом
+									interact(x1, y1, create, entities2); //Взаимодействовать с ней
+								} else {  //Если в клетке Существо
+									endTurn(create, entities2, 2); //Пропустить ход
+								}
+							} 
+						} else if (act >= 16 && act <= 23) { //Если действие - осмотр
+							///16 17 18
+							///19 C  20
+							///21 22 23
+							if (act == 16) { //Лев. верх
+								if (!entities.get(x + ";" + y) && !entities2.get(x + ";" + y)) { //Если клетка не занята Существом
+									check(x, y, create, stepCount, entities2, commands); //Осмотреть её
+								} else { //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							} else if (act == 17) { //Верх
+								if (!entities.get(create.coords[0] + ';' + y) && !entities2.get(create.coords[0] + ";" + y)) { //Если клетка не занята Существом
+									check(create.coords[0], y, create, stepCount, entities2, commands); //Осмотреть её
+								} else { //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							} else if (act == 18) { //Прав. верх
+								if (!entities.get(x1 + ';' + y) && !entities2.get(x1 + ";" + y)) { //Если клетка не занята Существом
+									check(x1, y, create, stepCount, entities2, commands); //Осмотреть её
+								} else { //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							} else if (act == 19) { //Лево
+								if (!entities.get(x + ';' + create.coords[1]) && !entities2.get(x + ';' + create.coords[1])) { //Если клетка не занята Существом
+									check(x, create.coords[1], create, stepCount, entities2, commands); //Осмотреть её
+								} else { //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							} else if (act == 20) { //Право
+								if (!entities.get(x1 + ';' + create.coords[1]) && !entities2.get(x1 + ';' + create.coords[1])) { //Если клетка не занята Существом
+									check(x1, create.coords[1], create, stepCount, entities2, commands); //Осмотреть её
+								} else { //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							} else if (act == 21) { //Лев. низ
+								if (!entities.get(x + ';' + y1) && !entities2.get(x + ';' + y1)) { //Если клетка не занята Существом
+									check(x, y1, create, stepCount, entities2, commands); //Осмотреть её
+								} else {  //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							} else if (act == 22) { //Низ
+								if (!entities.get(create.coords[0] + ';' + y1) && !entities2.get(create.coords[0] + ';' + y1)) { //Если клетка не занята Существом
+									check(create.coords[0], y1, create, stepCount, entities2, commands); //Осмотреть её
+								} else {  //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							} else { //Прав. низ
+								if (!entities.get(x1 + ';' + y1) && !entities2.get(x1 + ';' + y1)) { //Если клетка не занята Существом
+									check(x1, y1, create, stepCount, entities2, commands); //Осмотреть её
+								} else {  //Если в клетке Существо
+									skip(stepCount, create, 2, entities2, commands); //Пролистать геном на 2 шага
+								}
+							}
+						} else { //Иначе, действие - пролистывание генома
+							skip(stepCount, create, act, entities2, commands); //Пролистать геном
+						}
+					} //function commands
+				} //for (let i of entities)
+				entities = entities2; //Переместить временную карту в постоянную
+			} //function day
+			
+			
+			function mutate(entities2) { //Функция, собирающая новое поколение
+				score.unshift("Поколение " + generationCount + ' прожило ' + dayCount + ' дней');
+				if (score.length > 10) { //FIFO массив
+					score.pop();
+				}
+				$('#score').text(score.join('\n'));
+				generationCount++; //Увеличить счётчик поколений
+				dayCount = 0;
+				$('#genCount').text('Поколение ' + generationCount);
+				let newGeneration = []; //Массив с геномами
+				let genData = []; //Массив с геномами предков
+				for (let i of entities) { //Перебираем всех выживших существ из обычной карты
+					for (let j = 0; j < _minCreateCount; j++) { //Создаём нужное количество копий копий каждого, чтобы в итоге получить популяцию, равную по размерам начальной
+						newGeneration.push(JSON.stringify(i[1].code)); //Конвертируем значения в строку, чтобы снести все указатели
+					}
+					genData.push(JSON.stringify(i[1].code)); //Записать родителя
+				}
+				for (let i of entities2) { //Перебираем всех выживших существ из временной карты
+					for (let j = 0; j < _minCreateCount; j++) { //Создаём нужное количество копий копий каждого, чтобы в итоге получить популяцию, равную по размерам начальной
+						newGeneration.push(JSON.stringify(i[1].code)); //Конвертируем значения в строку, чтобы снести все указатели
+					}
+					genData.push(JSON.stringify(i[1].code)); //Записать родителя
+				}
+				entities.clear(); //Отчистить карту с существами
+				objects.clear(); //Отчистить карту с объектами
+				for (let i = 0; i < _minCreateCount; i++) { 
+					for (let j = 0; j < _minCreateCount; j++) { 
+						newGeneration[i * _minCreateCount + j] = JSON.parse(newGeneration[i * _minCreateCount + j]);
+						if (j < _mutantCount) { //Создаём нужное количество мутантов от каждого потомка
+							for (let k = 0; k < _mutationCount; k++) { //Мутируем нужное количество раз
+								newGeneration[i * _minCreateCount + j][Math.floor(Math.random() * _genomeLength)] = Math.floor(Math.random() * _genomeLength); //Заменяем случайно выбранную команду на случайную
+							}
+							genData.push( JSON.stringify(newGeneration[i * _minCreateCount + j]) ); //Записать мутанта
+						}
+					}
+				}
+				$('#genData').text("Активные геномы:\n" + genData.join('\n'));
+				generate(false, newGeneration); //Перегенерировать поле с новыми существами
+			} //function mutate
+		
+		
+			var runId = 0;
+			
+			function run() {
+				if (runId == 0) {
+					let speed = $('#speed').val() || 0;
+					runId = setInterval(day, speed);
+				}
+			} //function run
+			
+			function stop() {
+				clearInterval(runId);
+				runId = 0;
+			} //function stop
+		</script>
+	</body>
+</html>
